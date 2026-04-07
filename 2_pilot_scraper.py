@@ -257,10 +257,12 @@ def extract_topic_blocks(page, max_topics=4, articles_per_topic=4):
     articles = []
     seen_links = set()
 
-    # Wait for ANY news cards
-    page.wait_for_selector("a[href]", timeout=15000)
+    # ✅ Proper wait (no visibility issue)
+    page.wait_for_load_state("networkidle")
+    page.wait_for_timeout(5000)
 
-    anchors = page.query_selector_all("a[href]")
+    anchors = page.query_selector_all('a[href*="/articles/"], a[href*="/read/"]')
+    print(f"    🔎 Found {len(anchors)} potential article links")
 
     for a in anchors:
         try:
@@ -268,12 +270,10 @@ def extract_topic_blocks(page, max_topics=4, articles_per_topic=4):
             if not href:
                 continue
 
-            # Accept both formats
             if "/articles/" not in href and "/read/" not in href:
                 continue
 
             full_link = href if href.startswith("http") else f"https://news.google.com{href[1:]}"
-
             if full_link in seen_links:
                 continue
 
@@ -293,7 +293,7 @@ def extract_topic_blocks(page, max_topics=4, articles_per_topic=4):
             if len(articles) >= max_topics * articles_per_topic:
                 break
 
-        except:
+        except Exception:
             continue
 
     return articles
