@@ -257,7 +257,7 @@ def extract_topic_blocks(page, max_topics=4, articles_per_topic=4):
     articles = []
     seen_links = set()
 
-    # ✅ Proper wait (no visibility issue)
+    # Wait for page to fully load
     page.wait_for_load_state("networkidle")
     page.wait_for_timeout(5000)
 
@@ -270,9 +270,7 @@ def extract_topic_blocks(page, max_topics=4, articles_per_topic=4):
             if not href:
                 continue
 
-            if "/articles/" not in href and "/read/" not in href:
-                continue
-
+            # Build full URL
             full_link = href if href.startswith("http") else f"https://news.google.com{href[1:]}"
             if full_link in seen_links:
                 continue
@@ -281,23 +279,51 @@ def extract_topic_blocks(page, max_topics=4, articles_per_topic=4):
             if len(title) < 5:
                 continue
 
+            source = "Unknown"
+            published_time = "Unknown"
+
+            try:
+                # 🔥 Get article container
+                container = a.evaluate_handle(
+                    "el => el.closest('article') || el.parentElement.parentElement"
+                )
+                container_el = container.as_element()
+
+                if container_el:
+                    # ✅ Extract published time
+                    time_elem = container_el.query_selector("time")
+                    if time_elem:
+                        published_time = (
+                            time_elem.get_attribute("datetime")
+                            or time_elem.inner_text()
+                        )
+
+                    # ✅ Extract source (multiple fallback selectors)
+                    source_elem = container_el.query_selector(
+                        "div[data-n-tid], .vr7PYb, .W8yrY"
+                    )
+                    if source_elem:
+                        source = source_elem.inner_text().split("\n")[0]
+
+            except Exception:
+                pass
+
             seen_links.add(full_link)
 
             articles.append({
                 "title": title,
-                "source": "Unknown",
+                "source": source,
                 "link": full_link,
-                "published_time": "Unknown",
+                "published_time": published_time,
             })
 
+            # Limit articles
             if len(articles) >= max_topics * articles_per_topic:
                 break
 
         except Exception:
             continue
-
     return articles
-
 def scrape_user(
     account_name: str,
     storage_state_path: str,
