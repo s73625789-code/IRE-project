@@ -253,56 +253,50 @@ def get_full_content(article_url: str, browser_context):
             temp_page.close()
         return f"Error: {str(exc)[:120]}"
 
-
 def extract_topic_blocks(page, max_topics=4, articles_per_topic=4):
     articles = []
     seen_links = set()
 
-    try:
-        topic_containers = page.query_selector_all('[data-n-tid], article, .JtKRv')
-        for container in topic_containers:
+    # Wait for ANY news cards
+    page.wait_for_selector("a[href]", timeout=15000)
+
+    anchors = page.query_selector_all("a[href]")
+
+    for a in anchors:
+        try:
+            href = a.get_attribute("href")
+            if not href:
+                continue
+
+            # Accept both formats
+            if "/articles/" not in href and "/read/" not in href:
+                continue
+
+            full_link = href if href.startswith("http") else f"https://news.google.com{href[1:]}"
+
+            if full_link in seen_links:
+                continue
+
+            title = a.inner_text().strip()
+            if len(title) < 5:
+                continue
+
+            seen_links.add(full_link)
+
+            articles.append({
+                "title": title,
+                "source": "Unknown",
+                "link": full_link,
+                "published_time": "Unknown",
+            })
+
             if len(articles) >= max_topics * articles_per_topic:
                 break
 
-            try:
-                title_elem = container.query_selector('h3, h2, [role="heading"]')
-                title = title_elem.inner_text().strip() if title_elem else "Unknown Title"
-                if len(title) < 10:
-                    continue
+        except:
+            continue
 
-                source_elem = container.query_selector('[data-n-tid], .vr7PYb, .W8yrY, .mHwtf')
-                source = source_elem.inner_text().split('\n')[0] if source_elem else "Unknown"
-
-                link_elem = container.query_selector('a[href^="./articles"]')
-                href = link_elem.get_attribute('href') if link_elem else None
-                full_link = f"https://news.google.com{href[1:]}" if href else None
-
-                time_elem = container.query_selector('time')
-                published_time = (
-                    time_elem.get_attribute('datetime')
-                    or time_elem.inner_text()
-                    if time_elem
-                    else "Recently"
-                )
-
-                if full_link and full_link not in seen_links:
-                    seen_links.add(full_link)
-                    articles.append(
-                        {
-                            "title": title,
-                            "source": source,
-                            "link": full_link,
-                            "published_time": published_time,
-                        }
-                    )
-            except Exception:
-                continue
-
-        return articles[: max_topics * articles_per_topic]
-    except Exception as exc:
-        print(f"Error extracting topic blocks: {exc}")
-        return []
-
+    return articles
 
 def scrape_user(
     account_name: str,
