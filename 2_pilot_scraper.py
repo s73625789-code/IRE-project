@@ -1,21 +1,41 @@
 import argparse
 import base64
 import os
+import random
 import tempfile
 import time
-import random
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 from playwright.sync_api import sync_playwright
 from supabase import create_client, Client
 
 USER_CONFIG = [
-    {"email": "followsky45@gmail.com", "key": "followsky45"},
-    {"email": "s73625789@gmail.com", "key": "s73625789"},
-    {"email": "malothrajashekar85@gmail.com", "key": "malothrajashekar85"},
-    {"email": "pchaitu2005@gmail.com", "key": "pchaitu2005"},
-    {"email": "rushikeshhatti@gmail.com", "key": "rushikeshhatti"},
+    {
+        "email": "followsky45@gmail.com",
+        "key": "followsky45",
+        "account_name": "Sankar",
+    },
+    {
+        "email": "s73625789@gmail.com",
+        "key": "s73625789",
+        "account_name": "Sudheshna",
+    },
+    {
+        "email": "malothrajashekar85@gmail.com",
+        "key": "malothrajashekar85",
+        "account_name": "Rajashekar",
+    },
+    {
+        "email": "pchaitu2005@gmail.com",
+        "key": "pchaitu2005",
+        "account_name": "Chaitanya",
+    },
+    {
+        "email": "rushikeshhatti@gmail.com",
+        "key": "rushikeshhatti",
+        "account_name": "Rushikesh",
+    },
 ]
 DEFAULT_SESSION_DIR = os.getenv("SESSION_DIR", "sessions")
 
@@ -44,11 +64,41 @@ def parse_arguments():
         default=16,
         help="Maximum number of articles to scrape per user.",
     )
+    parser.add_argument(
+        "--max-topics",
+        type=int,
+        default=4,
+        help="Maximum number of Google News topic blocks to scan per user.",
+    )
+    parser.add_argument(
+        "--articles-per-topic",
+        type=int,
+        default=4,
+        help="Maximum number of articles to keep from each topic block.",
+    )
+    parser.add_argument(
+        "--min-hours-between-runs",
+        type=float,
+        default=0,
+        help="Skip a user if their latest scrape is newer than this many hours.",
+    )
     return parser.parse_args()
 
 
 def email_to_key(email: str) -> str:
     return email.lower().split("@")[0].replace(".", "_").replace("-", "_")
+
+
+def resolve_user(email: str) -> dict:
+    for user in USER_CONFIG:
+        if user["email"].lower() == email.lower():
+            return user
+
+    return {
+        "email": email,
+        "key": email_to_key(email),
+        "account_name": email,
+    }
 
 
 def load_session_path_for_user(user_key: str, session_dir: str) -> Optional[str]:
@@ -85,6 +135,58 @@ def get_supabase_client() -> Client:
         )
 
     return create_client(url, key)
+
+
+def parse_scraped_at(value: str) -> Optional[datetime]:
+    if not value:
+        return None
+
+    normalized = value.replace("Z", "+00:00")
+    parsed = datetime.fromisoformat(normalized)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def should_skip_recent_scrape(
+    account_name: str, min_hours_between_runs: float, supabase: Client
+) -> bool:
+    if min_hours_between_runs <= 0:
+        return False
+
+    try:
+        response = (
+            supabase.table("news_articles")
+            .select("scraped_at")
+            .eq("account_name", account_name)
+            .order("scraped_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+    except Exception as exc:
+        print(f"    Warning: could not check previous scrape time for {account_name}: {exc}")
+        return False
+
+    rows = response.data or []
+    if not rows:
+        return False
+
+    last_scraped_at = parse_scraped_at(rows[0].get("scraped_at"))
+    if not last_scraped_at:
+        return False
+
+    next_allowed_at = last_scraped_at + timedelta(hours=min_hours_between_runs)
+    now_utc = datetime.now(timezone.utc)
+    if now_utc < next_allowed_at:
+        remaining = next_allowed_at - now_utc
+        remaining_hours = round(remaining.total_seconds() / 3600, 2)
+        print(
+            f"    Skipping {account_name}: last scrape was at {last_scraped_at.isoformat()}, "
+            f"next allowed run in about {remaining_hours} hour(s)."
+        )
+        return True
+
+    return False
 
 
 def get_full_content(article_url: str, browser_context):
@@ -156,8 +258,19 @@ def extract_topic_blocks(page, max_topics=4, articles_per_topic=4):
         return []
 
 
-def scrape_user(account_name: str, storage_state_path: str, max_articles: int, supabase):
-    scraped_at = datetime.now().isoformat()
+def scrape_user(
+    account_name: str,
+    storage_state_path: str,
+    max_articles: int,
+    max_topics: int,
+    articles_per_topic: int,
+    min_hours_between_runs: float,
+    supabase: Client,
+):
+    if should_skip_recent_scrape(account_name, min_hours_between_runs, supabase):
+        return 0
+
+    scraped_at = datetime.now(timezone.utc).isoformat()
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -178,7 +291,11 @@ def scrape_user(account_name: str, storage_state_path: str, max_articles: int, s
         page.goto("https://news.google.com/foryou", wait_until="networkidle", timeout=60000)
         time.sleep(5)
 
-        articles = extract_topic_blocks(page, max_topics=4, articles_per_topic=4)
+        articles = extract_topic_blocks(
+            page,
+            max_topics=max_topics,
+            articles_per_topic=articles_per_topic,
+        )
         if not articles:
             print("    ❌ No articles found for this user.")
             context.close()
@@ -219,7 +336,7 @@ def main():
     users_to_run = []
 
     if args.user:
-        users_to_run.append({"email": args.user, "key": email_to_key(args.user)})
+        users_to_run.append(resolve_user(args.user))
     else:
         users_to_run = USER_CONFIG
 
@@ -240,7 +357,13 @@ def main():
             continue
 
         total_saved += scrape_user(
-            user["email"], storage_state_path, args.max_articles, supabase
+            user["account_name"],
+            storage_state_path,
+            args.max_articles,
+            args.max_topics,
+            args.articles_per_topic,
+            args.min_hours_between_runs,
+            supabase,
         )
 
     print("\n" + "=" * 70)
