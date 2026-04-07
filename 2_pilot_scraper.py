@@ -1,5 +1,6 @@
 import argparse
 import base64
+import json
 import os
 import random
 import tempfile
@@ -7,8 +8,8 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
+from urllib import error, parse, request
 from playwright.sync_api import sync_playwright
-from supabase import create_client, Client
 
 USER_CONFIG = [
     {
@@ -125,7 +126,7 @@ DEFAULT_SUPABASE_URL = "https://otexqhduccxpprkzkuvm.supabase.co"
 DEFAULT_SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im90ZXhxaGR1Y2N4cHBya3prdXZtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ0MzY4NjcsImV4cCI6MjA5MDAxMjg2N30.YjSj95euIBqZyKifgC51xZSyP3a0IFHhJz0uvh3RSq4"
 
 
-def get_supabase_client() -> Client:
+def get_supabase_config() -> tuple[str, str]:
     url = os.getenv("SUPABASE_URL", DEFAULT_SUPABASE_URL)
     key = os.getenv("SUPABASE_KEY", DEFAULT_SUPABASE_KEY)
 
@@ -134,7 +135,44 @@ def get_supabase_client() -> Client:
             "SUPABASE_URL and SUPABASE_KEY must be set as environment variables or defaults provided."
         )
 
-    return create_client(url, key)
+    return url.rstrip("/"), key
+
+
+def supabase_request(
+    supabase_url: str,
+    supabase_key: str,
+    method: str,
+    path: str,
+    query: Optional[dict] = None,
+    payload: Optional[object] = None,
+    extra_headers: Optional[dict] = None,
+):
+    headers = {
+        "apikey": supabase_key,
+        "Authorization": f"Bearer {supabase_key}",
+    }
+    if extra_headers:
+        headers.update(extra_headers)
+
+    url = f"{supabase_url}{path}"
+    if query:
+        url = f"{url}?{parse.urlencode(query)}"
+
+    data = None
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+
+    req = request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with request.urlopen(req, timeout=60) as response:
+            raw = response.read().decode("utf-8")
+            if not raw:
+                return None
+            return json.loads(raw)
+    except error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Supabase REST {exc.code}: {body}") from exc
 
 
 def parse_scraped_at(value: str) -> Optional[datetime]:
@@ -149,25 +187,33 @@ def parse_scraped_at(value: str) -> Optional[datetime]:
 
 
 def should_skip_recent_scrape(
-    account_name: str, min_hours_between_runs: float, supabase: Client
+    account_name: str,
+    min_hours_between_runs: float,
+    supabase_url: str,
+    supabase_key: str,
 ) -> bool:
     if min_hours_between_runs <= 0:
         return False
 
     try:
-        response = (
-            supabase.table("news_articles")
-            .select("scraped_at")
-            .eq("account_name", account_name)
-            .order("scraped_at", desc=True)
-            .limit(1)
-            .execute()
+        rows = supabase_request(
+            supabase_url,
+            supabase_key,
+            "GET",
+            "/rest/v1/news_articles",
+            query={
+                "select": "scraped_at",
+                "account_name": f"eq.{account_name}",
+                "order": "scraped_at.desc",
+                "limit": "1",
+            },
+            extra_headers={"Accept": "application/json"},
         )
     except Exception as exc:
         print(f"    Warning: could not check previous scrape time for {account_name}: {exc}")
         return False
 
-    rows = response.data or []
+    rows = rows or []
     if not rows:
         return False
 
@@ -265,9 +311,12 @@ def scrape_user(
     max_topics: int,
     articles_per_topic: int,
     min_hours_between_runs: float,
-    supabase: Client,
+    supabase_url: str,
+    supabase_key: str,
 ):
-    if should_skip_recent_scrape(account_name, min_hours_between_runs, supabase):
+    if should_skip_recent_scrape(
+        account_name, min_hours_between_runs, supabase_url, supabase_key
+    ):
         return 0
 
     scraped_at = datetime.now(timezone.utc).isoformat()
@@ -317,7 +366,17 @@ def scrape_user(
                 "scraped_at": scraped_at,
             }
             try:
-                supabase.table("news_articles").insert(row).execute()
+                supabase_request(
+                    supabase_url,
+                    supabase_key,
+                    "POST",
+                    "/rest/v1/news_articles",
+                    payload=row,
+                    extra_headers={
+                        "Accept": "application/json",
+                        "Prefer": "return=minimal",
+                    },
+                )
                 total_saved += 1
             except Exception as exc:
                 print(f"      ⚠️ Insert failed: {exc}")
@@ -331,7 +390,7 @@ def scrape_user(
 
 def main():
     args = parse_arguments()
-    supabase = get_supabase_client()
+    supabase_url, supabase_key = get_supabase_config()
     total_saved = 0
     users_to_run = []
 
@@ -363,7 +422,8 @@ def main():
             args.max_topics,
             args.articles_per_topic,
             args.min_hours_between_runs,
-            supabase,
+            supabase_url,
+            supabase_key,
         )
 
     print("\n" + "=" * 70)
