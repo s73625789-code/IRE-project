@@ -80,7 +80,7 @@ def parse_arguments():
     parser.add_argument(
         "--min-hours-between-runs",
         type=float,
-        default=6,
+        default=0,
         help="Skip a user if their latest scrape is newer than this many hours.",
     )
     return parser.parse_args()
