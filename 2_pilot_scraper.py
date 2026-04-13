@@ -28,11 +28,6 @@ USER_CONFIG = [
         "account_name": "Rajashekar",
     },
     {
-        "email": "pchaitu2005@gmail.com",
-        "key": "pchaitu2005",
-        "account_name": "Chaitanya",
-    },
-    {
         "email": "rushikeshhatti@gmail.com",
         "key": "rushikeshhatti",
         "account_name": "Rushikesh",
