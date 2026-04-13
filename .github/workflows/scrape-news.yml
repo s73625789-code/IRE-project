@@ -23,8 +23,6 @@ jobs:
             session_secret: SESSION_S73625789
           - email: malothrajashekar85@gmail.com
             session_secret: SESSION_MALOTHRAJASHEKAR85
-          - email: pchaitu2005@gmail.com
-            session_secret: SESSION_PCHAITU2005
           - email: rushikeshhatti@gmail.com
             session_secret: SESSION_RUSHIKESHHATTI
 
